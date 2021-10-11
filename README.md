@@ -1,0 +1,26 @@
+This project relates to an upcoming blog post (link will be included here when post is published).
+
+# Deploying this repository
+
+Please note that deploying this repository may incur cost. There are instructions at the bottom of this README on how to clean up the assets that are created.
+
+This project contains a [AWS Serverless Application Model](https://aws.amazon.com/serverless/sam/) template that deploys the components described in the blog post. To deploy this template in your AWS account:
+
+## From the command line
+1. Install the latest version of the [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-sam-cli-install.html)
+2. Clone this repository to your local machine `git clone https://github.com/aws-samples/qldb-monitor-access-patterns-blog-post`
+3. Run the following command to deploy the template: `sam deploy --guided` For Stack Name enter `qldb-monitor-access-patterns-blog-post`. Use defaults for everything else.
+
+# Cleaning up
+
+To remove the resources created by this repository:
+
+## From the command line
+1. Run the following command: `aws sam delete --stack-name qldb-monitor-access-patterns-blog-post`
+
+-- DELET EUNDER HERERE
+
+## From the CloudFormation console
+1. Navigate to the (CloudFormation console)[https://console.aws.amazon.com/cloudformation]
+2. Select the stack `blog-post-qldb-access-patterns`
+3. Click `Delete`

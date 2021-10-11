@@ -1,0 +1,277 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy of this
+# software and associated documentation files (the "Software"), to deal in the Software
+# without restriction, including without limitation the rights to use, copy, modify,
+# merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+# PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+# HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Parameters:
+  QLDBLedgerName:
+    Description: Name for QLDB Ledger
+    Type: String
+    MinLength: "1"
+    ConstraintDescription: must begin with a letter and contain only alphanumeric characters.
+    Default: shipments
+  apiGatewayName:
+    Type: String
+    Default: qldb-shipment
+  apiGatewayStageName:
+    Type: String
+    AllowedPattern: "[a-z0-9]+"
+    Default: dev
+Resources:
+  QLDBLedger:
+    Type: "AWS::QLDB::Ledger"
+    Properties:
+      DeletionProtection: false
+      Name: !Ref QLDBLedgerName
+      PermissionsMode: "STANDARD"
+  QLDBLayer:
+    Type: 'AWS::Serverless::LayerVersion'
+    Properties:
+      CompatibleRuntimes:
+        - python3.8
+      ContentUri: ./layers/pyqldb-3-1-0-python38.zip
+      Description: pyqldb-3-1-0-python38
+      LayerName: pyqldb-3-1-0-python38
+      LicenseInfo: 'Available under the MIT-0 license.'
+      RetentionPolicy: Retain
+  HelperLayer:
+    Type: 'AWS::Serverless::LayerVersion'
+    Properties:
+      CompatibleRuntimes:
+        - python3.8
+      ContentUri: ./layers/crhelper-2-0-7-python38.zip
+      Description: crhelper-2-0-7-python38
+      LayerName: crhelper-2-0-7-python38
+      LicenseInfo: 'Available under the MIT-0 license.'
+      RetentionPolicy: Retain
+  CRFunction:
+    Type: "AWS::Serverless::Function"
+    Properties:
+      PackageType: Zip
+      CodeUri: ./lambdaCode/
+      Handler: setupLedger.lambda_handler
+      Role: !GetAtt
+        - QLDBLambdaRole
+        - Arn
+      Runtime: python3.8
+      Timeout: 900
+      MemorySize: 5120
+      Layers:
+        - Ref: HelperLayer
+        - Ref: QLDBLayer
+      Environment:
+        Variables:
+          qldb_ledger: !Ref QLDBLedgerName
+  QLDBLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: "2012-10-17"
+      ManagedPolicyArns:
+        - Fn::Join:
+            - ""
+            - - "arn:"
+              - Ref: AWS::Partition
+              - :iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+  QLDBLambdaPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - "qldb:SendCommand"
+            Effect: Allow
+            Resource:
+              - !Sub "arn:aws:qldb:${AWS::Region}:${AWS::AccountId}:ledger/${QLDBLedgerName}"
+          - Action:
+              - "qldb:PartiQLCreateTable"
+              - "qldb:PartiQLCreateIndex"
+            Effect: Allow
+            Resource:
+              - !Sub "arn:aws:qldb:${AWS::Region}:${AWS::AccountId}:ledger/${QLDBLedgerName}/*"
+        Version: "2012-10-17"
+      PolicyName: QLDBLambdaPolicy
+      Roles:
+        - Ref: QLDBLambdaRole
+  CRLambda:
+    DependsOn:
+      [CRFunction, QLDBLambdaRole, QLDBLambdaPolicy, QLDBLedger]
+    Type: "AWS::CloudFormation::CustomResource"
+    Properties:
+      ServiceToken: !GetAtt
+        - CRFunction
+        - Arn
+      LedgerName: !Ref QLDBLedgerName
+  apiGwExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "QLDB:*"
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - "qldb:SendCommand"
+                Resource:
+                  - !Sub "arn:aws:qldb:${AWS::Region}:${AWS::AccountId}:ledger/${QLDBLedgerName}"
+              - Effect: Allow
+                Action:
+                  - "qldb:PartiQLInsert"
+                  - "qldb:PartiQLSelect"
+                  - "qldb:PartiQLHistoryFunction"
+                Resource:
+                  - !Sub "arn:aws:qldb:${AWS::Region}:${AWS::AccountId}:ledger/${QLDBLedgerName}/*"
+  lambdaAddFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Zip
+      CodeUri: ./lambdaCode/
+      Description: Lambda function to add shipments
+      Handler: addShipment.handler
+      MemorySize: 512
+      Role: !GetAtt apiGwExecutionRole.Arn
+      Runtime: python3.8
+      Layers:
+        - Ref: QLDBLayer         
+      Environment:
+        Variables:
+          QLDBLEDGER: !Ref QLDBLedgerName
+          QLDBTABLE: Shipments
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Method: POST
+            Path: /addevent
+            RestApiId: !Ref apiGatewayRestApi
+  lambdaGetBlockFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Zip
+      CodeUri: ./lambdaCode/
+      Description: Lambda function to get journal block
+      Handler: getBlock.handler
+      MemorySize: 512
+      Role: !GetAtt apiGwExecutionRole.Arn
+      Runtime: python3.8
+      Layers:
+        - Ref: QLDBLayer   
+      Environment:
+        Variables:
+          QLDBLEDGER: !Ref QLDBLedgerName
+          QLDBTABLE: Shipments
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Method: POST
+            Path: /getblock
+            RestApiId: !Ref apiGatewayRestApi
+  apiGatewayRestApi:
+    Type: "AWS::Serverless::Api"
+    Properties:
+      Name: !Ref apiGatewayName
+      StageName: !Ref apiGatewayStageName
+      EndpointConfiguration:
+        Type: REGIONAL
+      MethodSettings:
+        - ResourcePath: "/getblock"
+          HttpMethod: POST
+          LoggingLevel: INFO
+        - ResourcePath: "/addevent"
+          HttpMethod: POST
+          LoggingLevel: INFO
+      AccessLogSetting:
+        DestinationArn: !Sub ${apiLogGroup.Arn}
+        Format: >-
+          {
+          "apigw":{
+          "api_id":"$context.apiId",
+          "stage":"$context.stage",
+          "route_key":"$context.routeKey",
+          "request_id":"$context.requestId",
+          "aws_endpoint_request_id":"$context.awsEndpointRequestId",
+          "extended_request_id":"$context.extendedRequestId"
+          },
+          "client":{
+          "ip":"$context.identity.sourceIp"
+          },
+          "request":{
+          "time":"$context.requestTime",
+          "time_epoch":"$context.requestTimeEpoch",
+          "http_method":"$context.httpMethod",
+          "path":"$context.path",
+          "protocol":"$context.protocol"
+          },
+          "integration":{
+          "latency":"$context.integrationLatency",
+          "status":"$context.integrationStatus"
+          },
+          "response":{
+          "latency":"$context.responseLatency",
+          "status":"$context.status",
+          "length":"$context.responseLength"
+          }
+          }
+  apiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/api/${apiGatewayName}
+      RetentionInDays: 90
+Outputs:
+  apiGatewayInvokeURLForAddEvent:
+    Value: !Join
+              - ''
+              - - 'curl -H "Content-Type: application/json" -X POST -d '
+                - "'"
+                - '{"id":"123456", "product_name":"alexa dot", "source_location":"MKE2", "target_location":"ORD11", "status":"shipped"}'
+                - "' "
+                - !Sub https://${apiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/${apiGatewayStageName}/addevent
+  apiGatewayInvokeURLForGetBlock:
+    Value: !Join
+              - ''
+              - - 'curl -H "Content-Type: application/json" -X POST -d '
+                - "'"
+                - '{"document_id":"XXXXXXXXXX", "transaction_id":"XXXXXXXXXX", "response":"statement_summary"}'
+                - "' "
+                - !Sub https://${apiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/${apiGatewayStageName}/getblock
+  lambdaAddArn:
+    Value: !GetAtt lambdaAddFunction.Arn
+  lambdaGetBlockArn:
+    Value: !GetAtt lambdaGetBlockFunction.Arn
