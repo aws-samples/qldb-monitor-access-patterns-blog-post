@@ -1,5 +1,5 @@
 ## Monitor QLDB Access Patterns
-This project relates to an upcoming blog post (link will be included here when post is published).
+This project accompanies the AWS Blog post [Monitor Amazon QLDB Access Patterns](https://aws.amazon.com/blogs/database/monitor-amazon-qldb-query-access-patterns/).
 
 ### Deploying this repository
 
